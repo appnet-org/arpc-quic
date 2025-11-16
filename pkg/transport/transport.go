@@ -2,10 +2,16 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"sync"
 	"time"
@@ -48,7 +54,11 @@ func NewQUICTransportWithBalancer(address string, resolver *balancer.Resolver) (
 	}
 
 	// Create QUIC listener
-	listener, err := quic.Listen(udpConn, generateTLSConfig(), &quic.Config{
+	tlsConfig, err := generateServerTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	listener, err := quic.Listen(udpConn, tlsConfig, &quic.Config{
 		MaxIdleTimeout: 30 * time.Second,
 	})
 	if err != nil {
@@ -125,7 +135,7 @@ func (t *QUICTransport) connect(addr string) error {
 		return err
 	}
 
-	conn, err := quic.DialAddr(context.Background(), udpAddr.String(), generateTLSConfig(), &quic.Config{
+	conn, err := quic.DialAddr(context.Background(), udpAddr.String(), generateClientTLSConfig(), &quic.Config{
 		MaxIdleTimeout: 30 * time.Second,
 	})
 	if err != nil {
@@ -374,11 +384,50 @@ func (t *QUICTransport) GetResolver() *balancer.Resolver {
 	return t.resolver
 }
 
-// generateTLSConfig generates a basic TLS config for QUIC
+// generateClientTLSConfig generates a basic TLS config for QUIC
 // In production, you should use proper certificates
-func generateTLSConfig() *tls.Config {
+func generateClientTLSConfig() *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true,
+		ServerName:         "localhost",
 		NextProtos:         []string{"arpc-quic"},
 	}
+}
+
+// generateServerTLSConfig generates a self-signed TLS certificate for QUIC
+func generateServerTLSConfig() (*tls.Config, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"ARPC-QUIC"},
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"arpc-quic"},
+	}, nil
 }
