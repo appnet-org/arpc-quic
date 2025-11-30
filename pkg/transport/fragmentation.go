@@ -4,7 +4,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/appnet-org/arpc/pkg/logging"
+	"github.com/appnet-org/arpc-quic/pkg/logging"
 	protocol "github.com/appnet-org/arpc-quic/pkg/packet"
 	"go.uber.org/zap"
 )

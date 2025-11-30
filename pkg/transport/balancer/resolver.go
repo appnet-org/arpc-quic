@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/appnet-org/arpc/pkg/logging"
+	"github.com/appnet-org/arpc-quic/pkg/logging"
 	"github.com/appnet-org/arpc-tcp/pkg/transport/balancer/random"
 	"github.com/appnet-org/arpc-tcp/pkg/transport/balancer/types"
 	"go.uber.org/zap"

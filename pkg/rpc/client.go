@@ -7,7 +7,9 @@ import (
 	"fmt"
 
 	"github.com/appnet-org/arpc-quic/pkg/logging"
+	"github.com/appnet-org/arpc-quic/pkg/metadata"
 	"github.com/appnet-org/arpc-quic/pkg/packet"
+	"github.com/appnet-org/arpc-quic/pkg/rpc/element"
 	"github.com/appnet-org/arpc-quic/pkg/serializer"
 	"github.com/appnet-org/arpc-quic/pkg/transport"
 	"go.uber.org/zap"
@@ -15,32 +17,36 @@ import (
 
 // Client represents an RPC client with a transport and serializer.
 type Client struct {
-	transport   *transport.QUICTransport
-	serializer  serializer.Serializer
-	defaultAddr string
+	transport       *transport.QUICTransport
+	serializer      serializer.Serializer
+	metadataCodec   metadata.MetadataCodec
+	defaultAddr     string
+	rpcElementChain *element.RPCElementChain
 }
 
 // NewClient creates a new Client using the given serializer and target address.
 // The client will create a QUIC connection to the server.
-func NewClient(serializer serializer.Serializer, addr string) (*Client, error) {
+func NewClient(serializer serializer.Serializer, addr string, rpcElements []element.RPCElement) (*Client, error) {
 	t, err := transport.NewQUICClientTransport()
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
-		transport:   t,
-		serializer:  serializer,
-		defaultAddr: addr,
+		transport:       t,
+		serializer:      serializer,
+		metadataCodec:   metadata.MetadataCodec{},
+		defaultAddr:     addr,
+		rpcElementChain: element.NewRPCElementChain(rpcElements...),
 	}, nil
 }
 
 // NewClientWithLocalAddr creates a new Client using the given serializer, target address, and local address.
 // Note: For QUIC, the local address is not used in the same way as UDP.
 // This function is kept for API compatibility but the localAddr parameter is ignored.
-func NewClientWithLocalAddr(serializer serializer.Serializer, addr, localAddr string) (*Client, error) {
+func NewClientWithLocalAddr(serializer serializer.Serializer, addr, localAddr string, rpcElements []element.RPCElement) (*Client, error) {
 	// For QUIC, we don't bind to a local address in the same way
 	// The OS will assign a local port when we connect
-	return NewClient(serializer, addr)
+	return NewClient(serializer, addr, rpcElements)
 }
 
 // Transport returns the underlying QUIC transport for cleanup purposes
@@ -49,10 +55,10 @@ func (c *Client) Transport() *transport.QUICTransport {
 }
 
 // frameRequest constructs a binary message with
-// [serviceLen(2B)][service][methodLen(2B)][method][payload]
-func (c *Client) frameRequest(service, method string, payload []byte) ([]byte, error) {
-	// Pre-calculate buffer size (headers: 2 + 2 = 4 bytes)
-	totalSize := 4 + len(service) + len(method) + len(payload)
+// [serviceLen(2B)][service][methodLen(2B)][method][metadataLen(2B)][metadata][payload]
+func (c *Client) frameRequest(service, method string, metadataBytes, payload []byte) ([]byte, error) {
+	// Pre-calculate buffer size (headers: 2 + 2 + 2 = 6 bytes)
+	totalSize := 6 + len(service) + len(method) + len(metadataBytes) + len(payload)
 	buf := make([]byte, totalSize)
 
 	// service
@@ -64,8 +70,13 @@ func (c *Client) frameRequest(service, method string, payload []byte) ([]byte, e
 	binary.LittleEndian.PutUint16(buf[methodStart:methodStart+2], uint16(len(method)))
 	copy(buf[methodStart+2:], method)
 
+	// metadata
+	metadataStart := methodStart + 2 + len(method)
+	binary.LittleEndian.PutUint16(buf[metadataStart:metadataStart+2], uint16(len(metadataBytes)))
+	copy(buf[metadataStart+2:], metadataBytes)
+
 	// payload
-	payloadStart := methodStart + 2 + len(method)
+	payloadStart := metadataStart + 2 + len(metadataBytes)
 	copy(buf[payloadStart:], payload)
 
 	return buf, nil
@@ -112,35 +123,73 @@ func (c *Client) handleErrorPacket(errMsg string, errType packet.PacketTypeID) e
 	return &RPCError{Type: rpcErrType, Reason: errMsg}
 }
 
-func (c *Client) handleResponsePacket(data []byte, rpcID uint64, resp any) error {
+func (c *Client) handleResponsePacket(ctx context.Context, data []byte, rpcID uint64, resp any) (context.Context, error) {
 	// Parse framed response: extract service, method, payload
 	_, _, respPayloadBytes, err := c.parseFramedResponse(data)
 	if err != nil {
-		return fmt.Errorf("failed to parse framed response: %w", err)
+		return ctx, fmt.Errorf("failed to parse framed response: %w", err)
 	}
 
 	// Deserialize the response into resp
 	if err := c.serializer.Unmarshal(respPayloadBytes, resp); err != nil {
-		return fmt.Errorf("failed to unmarshal response: %w", err)
+		return ctx, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	logging.Debug("Successfully received response", zap.Uint64("rpcID", rpcID))
 
-	return nil
+	// Create response for RPC element processing
+	rpcResp := &element.RPCResponse{
+		ID:     rpcID,
+		Result: resp,
+		Error:  nil,
+	}
+
+	// Process response through RPC elements
+	rpcResp, ctx, err = c.rpcElementChain.ProcessResponse(ctx, rpcResp)
+	if err != nil {
+		return ctx, err
+	}
+
+	return ctx, rpcResp.Error
 }
 
-// Call makes an RPC call
+// Call makes an RPC call with RPC element processing
 func (c *Client) Call(ctx context.Context, service, method string, req any, resp any) error {
 	rpcReqID := transport.GenerateRPCID()
 
+	// Create request with service and method information
+	rpcReq := &element.RPCRequest{
+		ServiceName: service,
+		Method:      method,
+		ID:          rpcReqID,
+		Payload:     req,
+	}
+
+	// Process request through RPC elements
+	rpcReq, ctx, err := c.rpcElementChain.ProcessRequest(ctx, rpcReq)
+	if err != nil {
+		return err
+	}
+
+	// Extract metadata from context
+	md := metadata.FromOutgoingContext(ctx)
+	var metadataBytes []byte
+	if len(md) > 0 {
+		metadataBytes, err = c.metadataCodec.EncodeHeaders(md, nil)
+		if err != nil {
+			return fmt.Errorf("failed to encode metadata: %w", err)
+		}
+		logging.Debug("Encoded metadata", zap.String("metadata", fmt.Sprintf("%x", metadataBytes)))
+	}
+
 	// Serialize the request payload
-	reqPayloadBytes, err := c.serializer.Marshal(req)
+	reqPayloadBytes, err := c.serializer.Marshal(rpcReq.Payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// Frame the request into binary format
-	framedReq, err := c.frameRequest(service, method, reqPayloadBytes)
+	framedReq, err := c.frameRequest(rpcReq.ServiceName, rpcReq.Method, metadataBytes, reqPayloadBytes)
 	if err != nil {
 		return fmt.Errorf("failed to frame request: %w", err)
 	}
@@ -171,9 +220,20 @@ func (c *Client) Call(ctx context.Context, service, method string, req any, resp
 		// Process the packet based on its type
 		switch packetTypeID {
 		case packet.PacketTypeData:
-			return c.handleResponsePacket(data, respID, resp)
+			_, err := c.handleResponsePacket(ctx, data, respID, resp)
+			return err
 		case packet.PacketTypeError, packet.PacketTypeUnknown:
-			return c.handleErrorPacket(string(data), packetTypeID)
+			// Create error response for RPC element processing
+			rpcResp := &element.RPCResponse{
+				Result: nil,
+				Error:  c.handleErrorPacket(string(data), packetTypeID),
+			}
+			// Process error response through RPC elements
+			_, _, err := c.rpcElementChain.ProcessResponse(ctx, rpcResp)
+			if err != nil {
+				return err
+			}
+			return rpcResp.Error
 		default:
 			logging.Debug("Ignoring packet with unknown type", zap.Uint8("packetTypeID", uint8(packetTypeID)))
 			continue

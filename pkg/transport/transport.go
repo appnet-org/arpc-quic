@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/appnet-org/arpc-quic/pkg/logging"
 	"github.com/appnet-org/arpc-quic/pkg/packet"
 	"github.com/appnet-org/arpc-quic/pkg/transport/balancer"
-	"github.com/appnet-org/arpc/pkg/logging"
 	"github.com/quic-go/quic-go"
 	"go.uber.org/zap"
 )

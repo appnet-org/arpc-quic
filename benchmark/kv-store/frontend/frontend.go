@@ -13,6 +13,7 @@ import (
 	kv "github.com/appnet-org/arpc-quic/benchmark/kv-store/symphony"
 	"github.com/appnet-org/arpc-quic/pkg/logging"
 	"github.com/appnet-org/arpc-quic/pkg/rpc"
+	"github.com/appnet-org/arpc-quic/pkg/rpc/element"
 	"github.com/appnet-org/arpc-quic/pkg/serializer"
 	"go.uber.org/zap"
 )
@@ -136,8 +137,10 @@ func main() {
 	}
 
 	serializer := &serializer.SymphonySerializer{}
-	client, err := rpc.NewClient(serializer, "localhost:11000")
-	// client, err := rpc.NewClient(serializer, "kvstore.default.svc.cluster.local:11000")
+	// Create client with empty RPC elements (can add tracing, logging, etc. later)
+	clientElements := []element.RPCElement{}
+	client, err := rpc.NewClient(serializer, "localhost:11000", clientElements)
+	// client, err := rpc.NewClient(serializer, "kvstore.default.svc.cluster.local:11000", clientElements)
 	if err != nil {
 		logging.Fatal("Failed to create RPC client", zap.Error(err))
 	}

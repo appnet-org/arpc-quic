@@ -9,6 +9,7 @@ import (
 	kv "github.com/appnet-org/arpc-quic/benchmark/kv-store/symphony"
 	"github.com/appnet-org/arpc-quic/pkg/logging"
 	"github.com/appnet-org/arpc-quic/pkg/rpc"
+	"github.com/appnet-org/arpc-quic/pkg/rpc/element"
 	"github.com/appnet-org/arpc-quic/pkg/serializer"
 	"go.uber.org/zap"
 )
@@ -133,7 +134,9 @@ func main() {
 	}
 
 	serializer := &serializer.SymphonySerializer{}
-	server, err := rpc.NewServer(":11000", serializer)
+	// Create server with empty RPC elements (can add tracing, logging, etc. later)
+	rpcElements := []element.RPCElement{}
+	server, err := rpc.NewServer(":11000", serializer, rpcElements)
 	if err != nil {
 		logging.Fatal("Failed to start server", zap.Error(err))
 	}
@@ -148,24 +151,24 @@ func main() {
 
 	kvServer := NewKVServer(maxSize)
 
-	// Manually register the service with arpc-h2's server
-	// Create handlers that adapt arpc-h2's simpler interface to the server implementation
-	getHandler := func(srv any, ctx context.Context, dec func(any) error) (resp any, err error) {
+	// Manually register the service with arpc-quic's server
+	// Create handlers that adapt arpc-quic's interface to the server implementation
+	getHandler := func(srv any, ctx context.Context, dec func(any) error, rpcReq *element.RPCRequest, chain *element.RPCElementChain) (resp *element.RPCResponse, newCtx context.Context, err error) {
 		req := new(kv.GetRequest)
 		if err := dec(req); err != nil {
-			return nil, err
+			return &element.RPCResponse{Error: err}, ctx, err
 		}
-		result, _, err := srv.(kv.KVServiceServer).Get(ctx, req)
-		return result, err
+		result, returnCtx, err := srv.(kv.KVServiceServer).Get(ctx, req)
+		return &element.RPCResponse{Result: result, Error: err}, returnCtx, err
 	}
 
-	setHandler := func(srv any, ctx context.Context, dec func(any) error) (resp any, err error) {
+	setHandler := func(srv any, ctx context.Context, dec func(any) error, rpcReq *element.RPCRequest, chain *element.RPCElementChain) (resp *element.RPCResponse, newCtx context.Context, err error) {
 		req := new(kv.SetRequest)
 		if err := dec(req); err != nil {
-			return nil, err
+			return &element.RPCResponse{Error: err}, ctx, err
 		}
-		result, _, err := srv.(kv.KVServiceServer).Set(ctx, req)
-		return result, err
+		result, returnCtx, err := srv.(kv.KVServiceServer).Set(ctx, req)
+		return &element.RPCResponse{Result: result, Error: err}, returnCtx, err
 	}
 
 	server.RegisterService(&rpc.ServiceDesc{
