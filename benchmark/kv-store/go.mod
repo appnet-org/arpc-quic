@@ -5,7 +5,7 @@ go 1.24.0
 replace github.com/appnet-org/arpc-quic => ../../
 
 require (
-	github.com/appnet-org/arpc v0.0.0-20251114063304-449bde2d71a3
+	github.com/appnet-org/arpc v0.0.0-20260105104942-ac7b303fbf7c
 	github.com/appnet-org/arpc-quic v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.0
 	google.golang.org/protobuf v1.36.10

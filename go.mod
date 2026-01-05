@@ -6,7 +6,7 @@ toolchain go1.24.10
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
-	github.com/appnet-org/arpc v0.0.0-20251114063304-449bde2d71a3
+	github.com/appnet-org/arpc v0.0.0-20260105104942-ac7b303fbf7c
 	github.com/appnet-org/arpc-tcp v0.0.0-20251112223301-306d4c0c7f8c
 	github.com/quic-go/quic-go v0.40.1
 	go.uber.org/zap v1.27.0

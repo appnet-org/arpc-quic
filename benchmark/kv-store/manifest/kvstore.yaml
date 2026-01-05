@@ -27,6 +27,7 @@ spec:
     spec:
       containers:
       - image: appnetorg/kvstore-arpc-quic:latest
+        imagePullPolicy: Always
         name: frontend-kvstore-arpc-quic
         command: ["/app/frontend"]
         env:
@@ -66,6 +67,7 @@ spec:
     spec:
       containers:
       - image: appnetorg/kvstore-arpc-quic:latest
+        imagePullPolicy: Always
         name: kvstore-kvstore-arpc-quic
         command: ["/app/kvstore"]
         env:
