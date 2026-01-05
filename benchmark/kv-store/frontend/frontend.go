@@ -139,8 +139,8 @@ func main() {
 	serializer := &serializer.SymphonySerializer{}
 	// Create client with empty RPC elements (can add tracing, logging, etc. later)
 	clientElements := []element.RPCElement{}
-	client, err := rpc.NewClient(serializer, "localhost:11000", clientElements)
-	// client, err := rpc.NewClient(serializer, "kvstore.default.svc.cluster.local:11000", clientElements)
+	// client, err := rpc.NewClient(serializer, ":11000", clientElements)
+	client, err := rpc.NewClient(serializer, "kvstore.default.svc.cluster.local:11000", clientElements)
 	if err != nil {
 		logging.Fatal("Failed to create RPC client", zap.Error(err))
 	}
