@@ -4,8 +4,8 @@ import (
 	"net"
 	"sync"
 
-	"github.com/appnet-org/arpc/pkg/logging"
 	protocol "github.com/appnet-org/arpc-quic/pkg/packet"
+	"github.com/appnet-org/arpc/pkg/logging"
 	"go.uber.org/zap"
 )
 
@@ -37,9 +37,10 @@ func (r *DataReassembler) ProcessFragment(pkt any, addr *net.UDPAddr) ([]byte, *
 	}
 
 	r.incoming[dataPkt.RPCID][dataPkt.SeqNumber] = dataPkt.Payload
+	receivedCount := len(r.incoming[dataPkt.RPCID])
 
 	// Check if we have all fragments
-	if len(r.incoming[dataPkt.RPCID]) == int(dataPkt.TotalPackets) {
+	if receivedCount == int(dataPkt.TotalPackets) {
 		// Reassemble the complete message by concatenating fragments in order
 		var fullMessage []byte
 		for i := uint16(0); i < dataPkt.TotalPackets; i++ {

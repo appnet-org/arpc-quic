@@ -59,7 +59,7 @@ func NewQUICTransportWithBalancer(address string, resolver *balancer.Resolver) (
 		return nil, err
 	}
 	listener, err := quic.Listen(udpConn, tlsConfig, &quic.Config{
-		MaxIdleTimeout: 30 * time.Second,
+		MaxIdleTimeout: 300 * time.Second,
 	})
 	if err != nil {
 		return nil, err
@@ -136,7 +136,7 @@ func (t *QUICTransport) connect(addr string) error {
 	}
 
 	conn, err := quic.DialAddr(context.Background(), udpAddr.String(), generateClientTLSConfig(), &quic.Config{
-		MaxIdleTimeout: 30 * time.Second,
+		MaxIdleTimeout: 300 * time.Second,
 	})
 	if err != nil {
 		return err
@@ -265,42 +265,56 @@ func (t *QUICTransport) Receive(bufferSize int) ([]byte, *net.UDPAddr, uint64, p
 	}
 	defer stream.Close()
 
-	// Read packet length first (4 bytes) for framing
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(stream, lenBuf); err != nil {
-		return nil, nil, 0, packet.PacketTypeUnknown, err
-	}
-
-	packetLen := binary.LittleEndian.Uint32(lenBuf)
-	if packetLen > uint32(bufferSize) {
-		return nil, nil, 0, packet.PacketTypeUnknown, fmt.Errorf("packet length %d exceeds buffer size %d", packetLen, bufferSize)
-	}
-
-	// Read the actual packet data
-	buffer := make([]byte, packetLen)
-	if _, err := io.ReadFull(stream, buffer); err != nil {
-		return nil, nil, 0, packet.PacketTypeUnknown, err
-	}
-
 	// Get the remote address
 	addr := conn.RemoteAddr().(*net.UDPAddr)
 
-	// Deserialize the received data
-	pkt, packetTypeID, err := packet.DeserializePacket(buffer)
-	if err != nil {
-		return nil, nil, 0, packet.PacketTypeUnknown, err
-	}
+	// Read all packets from this stream until we get a complete message or stream closes
+	for {
+		// Read packet length first (4 bytes) for framing
+		lenBuf := make([]byte, 4)
+		if _, err := io.ReadFull(stream, lenBuf); err != nil {
+			if err == io.EOF {
+				// Stream closed, no more packets
+				return nil, nil, 0, packet.PacketTypeUnknown, err
+			}
+			return nil, nil, 0, packet.PacketTypeUnknown, err
+		}
 
-	// Handle different packet types based on their nature
-	switch p := pkt.(type) {
-	case *packet.DataPacket:
-		return t.ReassembleDataPacket(p, addr, packetTypeID)
-	case *packet.ErrorPacket:
-		return []byte(p.ErrorMsg), addr, p.RPCID, packetTypeID, nil
-	default:
-		// Unknown packet type - return early with no data
-		logging.Debug("Unknown packet type", zap.Uint8("packetTypeID", uint8(packetTypeID)))
-		return nil, nil, 0, packetTypeID, nil
+		packetLen := binary.LittleEndian.Uint32(lenBuf)
+		if packetLen > uint32(bufferSize) {
+			return nil, nil, 0, packet.PacketTypeUnknown, fmt.Errorf("packet length %d exceeds buffer size %d", packetLen, bufferSize)
+		}
+
+		// Read the actual packet data
+		buffer := make([]byte, packetLen)
+		if _, err := io.ReadFull(stream, buffer); err != nil {
+			return nil, nil, 0, packet.PacketTypeUnknown, err
+		}
+
+		// Deserialize the received data
+		pkt, packetTypeID, err := packet.DeserializePacket(buffer)
+		if err != nil {
+			return nil, nil, 0, packet.PacketTypeUnknown, err
+		}
+
+		// Handle different packet types based on their nature
+		switch p := pkt.(type) {
+		case *packet.DataPacket:
+			// Try to reassemble - if complete, return; otherwise continue reading from stream
+			fullMessage, originalSrcAddr, reassembledRPCID, packetTypeID, _ := t.ReassembleDataPacket(p, addr, packetTypeID)
+			if fullMessage != nil {
+				// Complete message reassembled, return it
+				return fullMessage, originalSrcAddr, reassembledRPCID, packetTypeID, nil
+			}
+			// Still waiting for more fragments, continue reading from this stream
+			continue
+		case *packet.ErrorPacket:
+			return []byte(p.ErrorMsg), addr, p.RPCID, packetTypeID, nil
+		default:
+			// Unknown packet type - continue reading
+			logging.Debug("Unknown packet type", zap.Uint8("packetTypeID", uint8(packetTypeID)))
+			continue
+		}
 	}
 }
 
